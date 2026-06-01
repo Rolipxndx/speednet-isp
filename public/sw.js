@@ -1,4 +1,4 @@
-const CACHE_NAME = 'speednet-v2'; // <-- Incrementamos a v2 para obligar a limpiar lo viejo
+const CACHE_NAME = 'speednet-v3'; // <-- Incrementamos a v3
 const urlsToCache = [
   '/',
   '/index.html',
@@ -7,12 +7,18 @@ const urlsToCache = [
   '/icon-512.png'
 ];
 
-// Instalación: Guardar los archivos base indispensables
+// Instalación tolerante a errores 404
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(urlsToCache);
-    }).then(() => self.skipWaiting()) // Fuerza al SW a activarse sin esperar a que se cierre la pestaña
+      // En lugar de addAll, mapeamos las promesas para que si una falla, no rompa el resto
+      const cachePromises = urlsToCache.map((url) => {
+        return cache.add(url).catch((err) => {
+          console.warn(`No se pudo precargar en caché el recurso: ${url}`, err);
+        });
+      });
+      return Promise.all(cachePromises);
+    }).then(() => self.skipWaiting())
   );
 });
 

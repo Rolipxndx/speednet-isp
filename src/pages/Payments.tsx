@@ -726,40 +726,48 @@ export default function Payments() {
               <div className="space-y-2">
 				<Label htmlFor="client_id">Cliente *</Label>
 			<Select
-				key={editingPayment ? `edit-${editingPayment.id}` : 'new-payment'} // Evita el conflicto de nodos en el DOM
-			value={form.watch('client_id')}
-			onValueChange={(value) => {
-      // 1. Registramos el cliente seleccionado en el formulario inmediatamente
-      form.setValue('client_id', value, { shouldValidate: true });
-      
-      // 2. Ejecutamos el autocompletado del monto (solo si es un nuevo pago)
-      if (clients && !editingPayment) {
-        const client = clients.find(c => c.id === value);
-        if (client?.plan_price && client.plan_price > 0) {
-          const currentAmount = form.getValues('amount');
-          
-          if (currentAmount === 0 || currentAmount === null) {
-            // 3. RETRASO CRÍTICO: Esperamos 100ms a que Chrome cierre el menú desplegable
-            // antes de forzar el re-renderizado con el nuevo precio.
-            setTimeout(() => {
-              form.setValue('amount', client.plan_price, { shouldValidate: true });
-            }, 100); 
-          }
+  key={editingPayment ? `edit-${editingPayment.id}` : 'new-payment'}
+  value={form.watch('client_id')}
+  onValueChange={(value) => {
+    // 1. Guardamos el ID del cliente SIN forzar una validación inmediata (evita que Zod salte por el monto en 0)
+    form.setValue('client_id', value, { shouldValidate: false });
+    
+    if (clients && !editingPayment) {
+      const client = clients.find(c => c.id === value);
+      if (client?.plan_price && client.plan_price > 0) {
+        const currentAmount = form.getValues('amount');
+        
+        if (currentAmount === 0 || currentAmount === null) {
+          // 2. Esperamos 150ms (margen seguro para Chrome) a que el menú del Select desaparezca por completo
+          setTimeout(() => {
+            // 3. Insertamos el precio del plan
+            form.setValue('amount', client.plan_price);
+            
+            // 4. AHORA SÍ: Forzamos de forma segura la validación de ambos campos con el DOM en reposo
+            form.trigger(['client_id', 'amount']);
+          }, 150);
+          return; // Salimos de la función con éxito
         }
       }
-    }}
-  >
-    <SelectTrigger>
-      <SelectValue placeholder="Seleccionar cliente" />
-    </SelectTrigger>
-    <SelectContent position="popper"> {/* Evita que Radix rompa los portales flotantes en Chrome */}
-      {clients?.map((client) => (
-        <SelectItem key={client.id} value={client.id}>
-          {client.full_name} - {client.id_number}
-        </SelectItem>
-      ))}
-    </SelectContent>
-  </Select>
+    }
+    
+    // Si no entra al autocompletado (ej. editando), validamos solo el cliente al final
+    setTimeout(() => {
+      form.trigger('client_id');
+    }, 150);
+  }}
+>
+  <SelectTrigger>
+    <SelectValue placeholder="Seleccionar cliente" />
+  </SelectTrigger>
+  <SelectContent position="popper">
+    {clients?.map((client) => (
+      <SelectItem key={client.id} value={client.id}>
+        {client.full_name} - {client.id_number}
+      </SelectItem>
+    ))}
+  </SelectContent>
+</Select>
   {form.formState.errors.client_id && (
     <p className="text-sm text-destructive">{form.formState.errors.client_id.message}</p>
   )}
