@@ -100,8 +100,8 @@ type Payment = {
   client?: {
     full_name: string;
     id_number: string;
-    plan?: { price: number };
-  };
+    plan?: { price: number } | null;
+  } | null;
 };
 
 type ClientOption = {
@@ -151,7 +151,7 @@ export default function Payments() {
   const canEdit = isAdminOrCobrador;
   const canDelete = profile?.role === 'admin';
 
-  // Obtener clientes para selector con el precio del plan (objeto, no array)
+  // Obtener clientes para selector con el precio del plan
   const { data: clients } = useQuery({
     queryKey: ['clients-select'],
     queryFn: async () => {
@@ -160,8 +160,8 @@ export default function Payments() {
         .select('id, full_name, id_number, plan:plans!plan_id(price)')
         .order('full_name');
       if (error) throw error;
-      // La relación !plan_id fuerza que plan sea un objeto, no un array
-      return data.map(c => ({
+      
+      return data.map((c: any) => ({
         id: c.id,
         full_name: c.full_name,
         id_number: c.id_number,
@@ -170,7 +170,7 @@ export default function Payments() {
     },
   });
 
-  // Obtener pagos con filtros
+  // Obtener pagos con filtros (CORREGIDO EL FILTRADO OR)
   const { data: paymentsData, isLoading } = useQuery({
     queryKey: ['payments', debouncedSearch, clientFilter, methodFilter, dateRange, page],
     queryFn: async () => {
@@ -181,8 +181,9 @@ export default function Payments() {
         .range(page * pageSize, (page + 1) * pageSize - 1);
 
       if (debouncedSearch) {
-        query = query.or(`client.full_name.ilike.%${debouncedSearch}%,client.id_number.ilike.%${debouncedSearch}%`, {
-          foreignTable: 'clients',
+        // CORRECCIÓN: Filtrado directo sobre la tabla raíz usando inner join implicito de PostgREST
+        query = query.or(`full_name.ilike.%${debouncedSearch}%,id_number.ilike.%${debouncedSearch}%`, {
+          foreignTable: 'clients'
         });
       }
       if (clientFilter !== 'all') {
@@ -220,25 +221,28 @@ export default function Payments() {
     },
   });
 
-  // Autocompletar monto al seleccionar cliente (solo en nuevo pago)
+  // CORRECCIÓN: Autocompletar monto sin loops infinitos ni dependencias circulares
   const selectedClientId = form.watch('client_id');
   useEffect(() => {
-    if (selectedClientId && clients && !editingPayment) {
-      const client = clients.find(c => c.id === selectedClientId);
-      if (client?.plan_price && client.plan_price > 0) {
-        // Evitar sobrescribir si el usuario ya ha modificado el monto manualmente
-        const currentAmount = form.getValues('amount');
-        if (currentAmount === 0 || currentAmount === null) {
+    if (!selectedClientId || !clients || editingPayment) return;
+
+    const client = clients.find(c => c.id === selectedClientId);
+    if (client?.plan_price && client.plan_price > 0) {
+      const currentAmount = form.getValues('amount');
+      if (currentAmount === 0 || currentAmount === null) {
+        const timer = setTimeout(() => {
           form.setValue('amount', client.plan_price, { shouldValidate: true });
-        }
+        }, 0);
+        return () => clearTimeout(timer);
       }
     }
-  }, [selectedClientId, clients, form, editingPayment]);
+  }, [selectedClientId, clients, editingPayment]);
 
   // Dropzone para evidencia
   const onDrop = useCallback((acceptedFiles: File[]) => {
     setEvidenceFile(acceptedFiles[0]);
   }, []);
+  
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: { 'image/*': ['.jpg', '.jpeg', '.png'], 'application/pdf': ['.pdf'] },
@@ -256,7 +260,7 @@ export default function Payments() {
     return fileName;
   };
 
-  // Función para generar y guardar recibo PDF en Storage
+  // Generar y salvar recibo de pago
   const generateReceiptPDF = async (paymentId: string, paymentData: PaymentFormData) => {
     try {
       const { data: company, error: companyError } = await supabase
@@ -318,11 +322,10 @@ export default function Payments() {
 
       const pdfBlob = doc.output('blob');
       const fileName = `receipt_${paymentId}_${Date.now()}.pdf`;
-      const filePath = fileName;
 
       const { error: uploadError } = await supabase.storage
         .from('receipts')
-        .upload(filePath, pdfBlob, {
+        .upload(fileName, pdfBlob, {
           contentType: 'application/pdf',
           upsert: true,
         });
@@ -330,7 +333,7 @@ export default function Payments() {
 
       const { data: publicUrlData } = supabase.storage
         .from('receipts')
-        .getPublicUrl(filePath);
+        .getPublicUrl(fileName);
       const publicUrl = publicUrlData.publicUrl;
 
       const { error: updateError } = await supabase
@@ -353,13 +356,18 @@ export default function Payments() {
       let evidenceUrl = editingPayment?.evidence_url || null;
 
       if (evidenceFile) {
-        setUploading(true);
-        try {
-          evidenceUrl = await uploadEvidence(evidenceFile);
-        } finally {
-          setUploading(false);
-        }
-      }
+  setUploading(true);
+  try {
+    evidenceUrl = await uploadEvidence(evidenceFile);
+  } catch (uploadError) {
+    console.error('Error al subir la evidencia:', uploadError);
+    toast.error('No se pudo subir el comprobante');
+    setUploading(false);
+    throw uploadError; // Lanzamos el error para que la mutación pase a estado onError
+  } finally {
+    setUploading(false);
+  }
+}
 
       let result;
 
@@ -443,7 +451,7 @@ export default function Payments() {
       payment_date: new Date(payment.payment_date),
       billing_month: payment.billing_month,
       payment_method: payment.payment_method,
-      notes: payment.notes,
+      notes: payment.notes || '',
     });
     setEvidenceFile(null);
     setOpenDialog(true);
@@ -628,8 +636,8 @@ export default function Payments() {
                 <TableRow key={payment.id}>
                   <TableCell>
                     <div>
-                      <p className="font-medium">{payment.client?.full_name}</p>
-                      <p className="text-xs text-muted-foreground">{payment.client?.id_number}</p>
+                      <p className="font-medium">{payment.client?.full_name || 'Cliente no encontrado'}</p>
+                      <p className="text-xs text-muted-foreground">{payment.client?.id_number || '—'}</p>
                     </div>
                   </TableCell>
                   <TableCell className="font-medium">${payment.amount.toFixed(2)}</TableCell>
@@ -855,7 +863,10 @@ export default function Payments() {
                   <Button
                     variant="link"
                     type="button"
-                    onClick={() => editingPayment?.evidence_url && window.open(getEvidenceUrl(editingPayment.evidence_url), '_blank')}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      editingPayment?.evidence_url && window.open(getEvidenceUrl(editingPayment.evidence_url), '_blank');
+                    }}
                   >
                     Ver comprobante actual
                   </Button>
@@ -887,13 +898,15 @@ export default function Payments() {
         </DialogContent>
       </Dialog>
 
-      {/* Diálogo de eliminación */}
+      {/* Diálogo de eliminación blindado contra nulos en cierres asíncronos */}
       <AlertDialog open={!!paymentToDelete} onOpenChange={() => setPaymentToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>¿Eliminar pago?</AlertDialogTitle>
             <AlertDialogDescription>
-              Esta acción no se puede deshacer. Se eliminará el pago de {paymentToDelete?.client?.full_name} por ${paymentToDelete?.amount.toFixed(2)}.
+              Esta acción no se puede deshacer. Se eliminará el pago de{' '}
+              <span className="font-semibold">{paymentToDelete?.client?.full_name || 'este cliente'}</span>
+              {paymentToDelete?.amount !== undefined ? ` por $${paymentToDelete.amount.toFixed(2)}.` : '.'}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -901,6 +914,7 @@ export default function Payments() {
             <AlertDialogAction
               onClick={() => paymentToDelete && deleteMutation.mutate(paymentToDelete.id)}
               className="bg-destructive hover:bg-destructive/90"
+              disabled={deleteMutation.isPending}
             >
               {deleteMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Eliminar
