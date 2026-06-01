@@ -170,7 +170,7 @@ export default function Payments() {
     },
   });
 
-  // Obtener pagos con filtros (CORREGIDO EL FILTRADO OR)
+  // Obtener pagos con filtros
   const { data: paymentsData, isLoading } = useQuery({
     queryKey: ['payments', debouncedSearch, clientFilter, methodFilter, dateRange, page],
     queryFn: async () => {
@@ -220,7 +220,7 @@ export default function Payments() {
     },
   });
 
-  // Observa el cliente seleccionado para autocompletar el monto (solo en nuevos pagos)
+  // Observa el cliente seleccionado para autocompletar el monto
   const selectedClientId = form.watch('client_id');
 
   useEffect(() => {
@@ -530,6 +530,44 @@ export default function Payments() {
         )}
       </div>
 
+      {/* 
+         ========================================
+         SECCIÓN AGREGADA: GRÁFICO / ESTADÍSTICAS
+         ========================================
+         Si tienes un componente de gráfico aquí, es donde debe ir.
+         El error "width(-1)" ocurre porque el padre no tiene tamaño.
+         El error "removeChild" ocurre al cambiar de cliente sin key.
+      */}
+      <Card className="border-dashed">
+        <CardHeader>
+          <h3 className="text-lg font-medium">Estadísticas de Pagos</h3>
+        </CardHeader>
+        <CardContent>
+          {/* Contenedor con dimensiones explícitas para evitar width(-1) height(-1) */}
+          <div style={{ width: '100%', height: '300px', position: 'relative' }}>
+            {/* 
+               EJEMPLO DE CÓMO DEBE IR TU GRÁFICO:
+               
+               <ResponsiveContainer width="100%" height="100%">
+                 <LineChart data={payments} key={clientFilter}>
+                   <XAxis dataKey="payment_date" />
+                   <YAxis />
+                   <Tooltip />
+                   <Line type="monotone" dataKey="amount" stroke="#8884d8" />
+                 </LineChart>
+               </ResponsiveContainer>
+               
+               NOTA: Observa la propiedad key={clientFilter}. 
+               Esto reinicia el gráfico al filtrar, evitando el error removeChild.
+            */}
+            <div className="flex h-full items-center justify-center text-muted-foreground">
+               {/* Placeholder visual ya que no tengo tu componente Chart */}
+               <p className="text-sm">Aquí se visualizaría el gráfico de historial de pagos.</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader className="pb-4">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -729,7 +767,11 @@ export default function Payments() {
 
       {/* Modal Formulario */}
       <Dialog open={openDialog} onOpenChange={setOpenDialog}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[600px]">
+        <DialogContent 
+          className="max-h-[90vh] overflow-y-auto sm:max-w-[600px]"
+          // FIX: Forzar remount limpio del dialogo para evitar errores de DOM (removeChild)
+          key={editingPayment ? editingPayment.id : 'create-payment'}
+        >
           <DialogHeader>
             <DialogTitle>{editingPayment ? 'Editar Pago' : 'Registrar Pago'}</DialogTitle>
             <DialogDescription>
@@ -903,7 +945,7 @@ export default function Payments() {
         </DialogContent>
       </Dialog>
 
-      {/* Diálogo de eliminación blindado contra nulos en cierres asíncronos */}
+      {/* Diálogo de eliminación */}
       <AlertDialog open={!!paymentToDelete} onOpenChange={() => setPaymentToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
