@@ -77,7 +77,7 @@ import toast from 'react-hot-toast';
 // ---------- Tipos ----------
 const paymentSchema = z.object({
   client_id: z.string().uuid('Cliente requerido'),
-  amount: z.coerce.number().positive('El monto debe ser positivo'),
+  amount: z.number().positive('El monto debe ser positivo'),
   payment_date: z.date(),
   billing_month: z.string().min(1, 'Mes facturado requerido'),
   payment_method: z.enum(['efectivo', 'transferencia', 'tarjeta', 'otro']),
@@ -181,7 +181,6 @@ export default function Payments() {
         .range(page * pageSize, (page + 1) * pageSize - 1);
 
       if (debouncedSearch) {
-        // CORRECCIÓN: Filtrado directo sobre la tabla raíz usando inner join implicito de PostgREST
         query = query.or(`full_name.ilike.%${debouncedSearch}%,id_number.ilike.%${debouncedSearch}%`, {
           foreignTable: 'clients'
         });
@@ -220,7 +219,22 @@ export default function Payments() {
       notes: '',
     },
   });
- 
+
+  // Observa el cliente seleccionado para autocompletar el monto (solo en nuevos pagos)
+  const selectedClientId = form.watch('client_id');
+
+  useEffect(() => {
+    // Solo autocompletar si estamos creando un nuevo pago (no edición)
+    if (!editingPayment && selectedClientId && clients) {
+      const client = clients.find(c => c.id === selectedClientId);
+      const currentAmount = form.getValues('amount');
+      if (client?.plan_price && client.plan_price > 0 && (currentAmount === 0 || currentAmount === null)) {
+        form.setValue('amount', client.plan_price);
+      }
+      // Validación suave del campo cliente
+      form.trigger('client_id').catch(console.warn);
+    }
+  }, [selectedClientId, clients, editingPayment, form]);
 
   // Dropzone para evidencia
   const onDrop = useCallback((acceptedFiles: File[]) => {
@@ -340,18 +354,18 @@ export default function Payments() {
       let evidenceUrl = editingPayment?.evidence_url || null;
 
       if (evidenceFile) {
-  setUploading(true);
-  try {
-    evidenceUrl = await uploadEvidence(evidenceFile);
-  } catch (uploadError) {
-    console.error('Error al subir la evidencia:', uploadError);
-    toast.error('No se pudo subir el comprobante');
-    setUploading(false);
-    throw uploadError; // Lanzamos el error para que la mutación pase a estado onError
-  } finally {
-    setUploading(false);
-  }
-}
+        setUploading(true);
+        try {
+          evidenceUrl = await uploadEvidence(evidenceFile);
+        } catch (uploadError) {
+          console.error('Error al subir la evidencia:', uploadError);
+          toast.error('No se pudo subir el comprobante');
+          setUploading(false);
+          throw uploadError;
+        } finally {
+          setUploading(false);
+        }
+      }
 
       let result;
 
@@ -723,55 +737,28 @@ export default function Payments() {
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-              <div className="space-y-2">
-				<Label htmlFor="client_id">Cliente *</Label>
-			<Select
-  key={editingPayment ? `edit-${editingPayment.id}` : 'new-payment'}
-  value={form.watch('client_id')}
-  onValueChange={(value) => {
-    // 1. Guardamos el ID del cliente SIN forzar una validación inmediata (evita que Zod salte por el monto en 0)
-    form.setValue('client_id', value, { shouldValidate: false });
-    
-    if (clients && !editingPayment) {
-      const client = clients.find(c => c.id === value);
-      if (client?.plan_price && client.plan_price > 0) {
-        const currentAmount = form.getValues('amount');
-        
-        if (currentAmount === 0 || currentAmount === null) {
-          // 2. Esperamos 150ms (margen seguro para Chrome) a que el menú del Select desaparezca por completo
-          setTimeout(() => {
-            // 3. Insertamos el precio del plan
-            form.setValue('amount', client.plan_price);
-            
-            // 4. AHORA SÍ: Forzamos de forma segura la validación de ambos campos con el DOM en reposo
-            form.trigger(['client_id', 'amount']);
-          }, 150);
-          return; // Salimos de la función con éxito
-        }
-      }
-    }
-    
-    // Si no entra al autocompletado (ej. editando), validamos solo el cliente al final
-    setTimeout(() => {
-      form.trigger('client_id');
-    }, 150);
-  }}
->
-  <SelectTrigger>
-    <SelectValue placeholder="Seleccionar cliente" />
-  </SelectTrigger>
-  <SelectContent position="popper">
-    {clients?.map((client) => (
-      <SelectItem key={client.id} value={client.id}>
-        {client.full_name} - {client.id_number}
-      </SelectItem>
-    ))}
-  </SelectContent>
-</Select>
-  {form.formState.errors.client_id && (
-    <p className="text-sm text-destructive">{form.formState.errors.client_id.message}</p>
-  )}
-</div>
+            <div className="space-y-2">
+              <Label htmlFor="client_id">Cliente *</Label>
+              <Select
+                value={form.watch('client_id')}
+                onValueChange={(value) => form.setValue('client_id', value, { shouldValidate: true })}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Seleccionar cliente" />
+                </SelectTrigger>
+                <SelectContent position="popper">
+                  {clients?.map((client) => (
+                    <SelectItem key={client.id} value={client.id}>
+                      {client.full_name} - {client.id_number}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {form.formState.errors.client_id && (
+                <p className="text-sm text-destructive">{form.formState.errors.client_id.message}</p>
+              )}
+            </div>
+
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="amount">Monto ($) *</Label>
@@ -815,6 +802,7 @@ export default function Payments() {
                 </Popover>
               </div>
             </div>
+
             <div className="space-y-2">
               <Label htmlFor="billing_month">Mes facturado *</Label>
               <Select
@@ -833,6 +821,7 @@ export default function Payments() {
                 </SelectContent>
               </Select>
             </div>
+
             <div className="space-y-2">
               <Label htmlFor="payment_method">Método de pago *</Label>
               <Select
@@ -850,10 +839,12 @@ export default function Payments() {
                 </SelectContent>
               </Select>
             </div>
+
             <div className="space-y-2">
               <Label htmlFor="notes">Notas (opcional)</Label>
               <Textarea id="notes" {...form.register('notes')} placeholder="Observaciones..." />
             </div>
+
             <div className="space-y-2">
               <Label>Comprobante (opcional)</Label>
               <div
@@ -885,6 +876,7 @@ export default function Payments() {
                 )}
               </div>
             </div>
+
             {!editingPayment && (
               <div className="flex items-center space-x-2">
                 <Checkbox
@@ -897,6 +889,7 @@ export default function Payments() {
                 </Label>
               </div>
             )}
+
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setOpenDialog(false)}>
                 Cancelar
