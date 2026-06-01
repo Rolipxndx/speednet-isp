@@ -232,7 +232,7 @@ export default function Payments() {
       if (currentAmount === 0 || currentAmount === null) {
         const timer = setTimeout(() => {
           form.setValue('amount', client.plan_price, { shouldValidate: true });
-        }, 0);
+        }, 50);
         return () => clearTimeout(timer);
       }
     }
@@ -739,27 +739,29 @@ export default function Payments() {
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="client_id">Cliente *</Label>
-              <Select
-                value={form.watch('client_id')}
-                onValueChange={(value) => form.setValue('client_id', value)}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Seleccionar cliente" />
-                </SelectTrigger>
-                <SelectContent>
-                  {clients?.map((client) => (
-                    <SelectItem key={client.id} value={client.id}>
-                      {client.full_name} - {client.id_number}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {form.formState.errors.client_id && (
-                <p className="text-sm text-destructive">{form.formState.errors.client_id.message}</p>
-              )}
-            </div>
+           // BUSCA EL DIV DEL CLIENTE EN EL MODAL Y REEMPLÁZALO ASÍ:
+	<div className="space-y-2">
+	  <Label htmlFor="client_id">Cliente *</Label>
+	  <Select
+		key={editingPayment ? `edit-${editingPayment.id}` : 'new-payment'} // <-- ESTO EVITA EL ERROR REMOVECHILD
+		value={form.watch('client_id')}
+		onValueChange={(value) => form.setValue('client_id', value, { shouldValidate: true })}
+	  >
+		<SelectTrigger>
+		  <SelectValue placeholder="Seleccionar cliente" />
+		</SelectTrigger>
+		<SelectContent position="popper"> {/* position popper evita que rompa el portal del DOM */}
+		  {clients?.map((client) => (
+			<SelectItem key={client.id} value={client.id}>
+			  {client.full_name} - {client.id_number}
+			</SelectItem>
+		  ))}
+		</SelectContent>
+	  </Select>
+	  {form.formState.errors.client_id && (
+		<p className="text-sm text-destructive">{form.formState.errors.client_id.message}</p>
+	  )}
+	</div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="amount">Monto ($) *</Label>
