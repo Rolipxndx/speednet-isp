@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, startTransition } from 'react'; // <--- IMPORTAR startTransition
+import { useState, useCallback, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/lib/supabaseClient';
 import { useAuth } from '@/hooks/useAuth';
@@ -44,7 +44,7 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
-import { useForm, Controller } from 'react-hook-form'; // <--- IMPORTAR Controller
+import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import {
@@ -151,7 +151,7 @@ export default function Payments() {
   const canEdit = isAdminOrCobrador;
   const canDelete = profile?.role === 'admin';
 
-  // Obtener clientes
+  // Obtener clientes para selector con el precio del plan
   const { data: clients } = useQuery({
     queryKey: ['clients-select'],
     queryFn: async () => {
@@ -170,7 +170,7 @@ export default function Payments() {
     },
   });
 
-  // Obtener pagos
+  // Obtener pagos con filtros
   const { data: paymentsData, isLoading } = useQuery({
     queryKey: ['payments', debouncedSearch, clientFilter, methodFilter, dateRange, page],
     queryFn: async () => {
@@ -207,7 +207,7 @@ export default function Payments() {
   const payments = paymentsData?.data || [];
   const totalCount = paymentsData?.count || 0;
 
-  // Formulario - Extraemos 'control' para usar Controller
+  // Formulario
   const form = useForm<PaymentFormData>({
     resolver: zodResolver(paymentSchema),
     defaultValues: {
@@ -221,25 +221,22 @@ export default function Payments() {
   });
 
   // Observa el cliente seleccionado para autocompletar el monto
-  // FIX: Usamos startTransition para priorizar el cierre del Select sobre la actualización del monto
   const selectedClientId = form.watch('client_id');
 
   useEffect(() => {
+    // Solo autocompletar si estamos creando un nuevo pago (no edición)
     if (!editingPayment && selectedClientId && clients) {
       const client = clients.find(c => c.id === selectedClientId);
       const currentAmount = form.getValues('amount');
-      
       if (client?.plan_price && client.plan_price > 0 && (currentAmount === 0 || currentAmount === null)) {
-        // IMPORTANTE: Envolver en startTransition evita el crash removeChild
-        startTransition(() => {
-          form.setValue('amount', client.plan_price);
-        });
+        form.setValue('amount', client.plan_price);
       }
+      // Validación suave del campo cliente
       form.trigger('client_id').catch(console.warn);
     }
   }, [selectedClientId, clients, editingPayment, form]);
 
-  // Dropzone
+  // Dropzone para evidencia
   const onDrop = useCallback((acceptedFiles: File[]) => {
     setEvidenceFile(acceptedFiles[0]);
   }, []);
@@ -261,50 +258,97 @@ export default function Payments() {
     return fileName;
   };
 
-  // PDF
+  // Generar y salvar recibo de pago
   const generateReceiptPDF = async (paymentId: string, paymentData: PaymentFormData) => {
     try {
-      const { data: company } = await supabase.from('company_settings').select('*').single();
-      const { data: client } = await supabase.from('clients').select('*').eq('id', paymentData.client_id).single();
+      const { data: company, error: companyError } = await supabase
+        .from('company_settings')
+        .select('*')
+        .single();
+      if (companyError) throw companyError;
 
-      if (!client || !company) throw new Error('Datos faltantes');
+      const { data: client, error: clientError } = await supabase
+        .from('clients')
+        .select('full_name, id_number, address, phone')
+        .eq('id', paymentData.client_id)
+        .single();
+      if (clientError) throw clientError;
+
+      if (!client || !company) {
+        throw new Error('No se pudieron obtener los datos para el PDF');
+      }
 
       const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: [80, 150] });
       const pageWidth = doc.internal.pageSize.getWidth();
 
       doc.setFontSize(10);
       doc.setFont('helvetica', 'bold');
-      doc.text(company.name || 'SpeedNet', pageWidth / 2, 10, { align: 'center' });
+      doc.text(company.name || 'Mi Empresa', pageWidth / 2, 10, { align: 'center' });
       doc.setFontSize(7);
       doc.setFont('helvetica', 'normal');
       doc.text(company.address || '', pageWidth / 2, 15, { align: 'center' });
-      doc.line(5, 20, pageWidth - 5, 20);
+      doc.text(`Tel: ${company.phone || ''}`, pageWidth / 2, 20, { align: 'center' });
+      if (company.tax_id) doc.text(`RUC: ${company.tax_id}`, pageWidth / 2, 25, { align: 'center' });
+      doc.line(5, 28, pageWidth - 5, 28);
 
-      doc.text(`Cliente: ${client.full_name}`, 5, 30);
-      doc.text(`Monto: $${paymentData.amount.toFixed(2)}`, 5, 35);
-      doc.text(`Fecha: ${format(new Date(paymentData.payment_date), 'dd/MM/yyyy')}`, 5, 40);
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'bold');
+      doc.text('RECIBO DE PAGO', pageWidth / 2, 33, { align: 'center' });
+
+      doc.setFontSize(7);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Cliente: ${client.full_name}`, 5, 40);
+      doc.text(`Cédula: ${client.id_number}`, 5, 45);
+      doc.text(`Dirección: ${client.address || ''}`, 5, 50);
+      doc.line(5, 53, pageWidth - 5, 53);
+
+      doc.setFont('helvetica', 'bold');
+      doc.text('DETALLE DEL PAGO', pageWidth / 2, 58, { align: 'center' });
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Fecha: ${format(new Date(paymentData.payment_date), 'dd/MM/yyyy')}`, 5, 63);
+      doc.text(`Mes facturado: ${paymentData.billing_month}`, 5, 68);
+      doc.text(`Método: ${paymentData.payment_method}`, 5, 73);
+      doc.setFontSize(12);
+      doc.setFont('helvetica', 'bold');
+      doc.text(`$${paymentData.amount.toFixed(2)}`, pageWidth / 2, 83, { align: 'center' });
+      doc.setFontSize(7);
+      doc.setFont('helvetica', 'normal');
+      if (paymentData.notes) doc.text(`Notas: ${paymentData.notes}`, 5, 90);
+      doc.line(5, 95, pageWidth - 5, 95);
+      doc.text('Gracias por su pago', pageWidth / 2, 100, { align: 'center' });
+      doc.text(`Impreso: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, pageWidth / 2, 105, { align: 'center' });
 
       const pdfBlob = doc.output('blob');
-      const fileName = `receipt_${paymentId}.pdf`;
+      const fileName = `receipt_${paymentId}_${Date.now()}.pdf`;
 
       const { error: uploadError } = await supabase.storage
         .from('receipts')
-        .upload(fileName, pdfBlob, { contentType: 'application/pdf', upsert: true });
+        .upload(fileName, pdfBlob, {
+          contentType: 'application/pdf',
+          upsert: true,
+        });
       if (uploadError) throw uploadError;
 
-      const { data: publicUrlData } = supabase.storage.from('receipts').getPublicUrl(fileName);
+      const { data: publicUrlData } = supabase.storage
+        .from('receipts')
+        .getPublicUrl(fileName);
       const publicUrl = publicUrlData.publicUrl;
 
-      await supabase.from('payments').update({ receipt_url: publicUrl }).eq('id', paymentId);
-      
-      toast.success('Recibo generado');
+      const { error: updateError } = await supabase
+        .from('payments')
+        .update({ receipt_url: publicUrl })
+        .eq('id', paymentId);
+      if (updateError) throw updateError;
+
+      toast.success('Recibo generado y guardado correctamente');
       window.open(publicUrl, '_blank');
-    } catch (error) {
-      toast.error('Error generando recibo');
+    } catch (error: any) {
+      console.error('Error al generar recibo:', error);
+      toast.error('Error al generar recibo: ' + (error.message || 'Error de permisos'));
     }
   };
 
-  // Mutaciones
+  // Mutación crear/editar
   const mutation = useMutation({
     mutationFn: async (data: PaymentFormData) => {
       let evidenceUrl = editingPayment?.evidence_url || null;
@@ -313,44 +357,54 @@ export default function Payments() {
         setUploading(true);
         try {
           evidenceUrl = await uploadEvidence(evidenceFile);
-        } catch (e) {
-          toast.error('Error subiendo comprobante');
-          throw e;
+        } catch (uploadError) {
+          console.error('Error al subir la evidencia:', uploadError);
+          toast.error('No se pudo subir el comprobante');
+          setUploading(false);
+          throw uploadError;
         } finally {
           setUploading(false);
         }
       }
 
       let result;
+
       if (editingPayment) {
-        const { error } = await supabase.from('payments').update({
-          client_id: data.client_id,
-          amount: data.amount,
-          payment_date: format(data.payment_date, 'yyyy-MM-dd'),
-          billing_month: data.billing_month,
-          payment_method: data.payment_method,
-          notes: data.notes,
-          evidence_url: evidenceUrl,
-        }).eq('id', editingPayment.id);
+        const { error } = await supabase
+          .from('payments')
+          .update({
+            client_id: data.client_id,
+            amount: data.amount,
+            payment_date: format(data.payment_date, 'yyyy-MM-dd'),
+            billing_month: data.billing_month,
+            payment_method: data.payment_method,
+            notes: data.notes,
+            evidence_url: evidenceUrl,
+          })
+          .eq('id', editingPayment.id);
         if (error) throw error;
-        result = editingPayment;
+        result = { id: editingPayment.id, ...data };
       } else {
-        const { data: newId, error } = await supabase.rpc('insert_payment', {
+        const { data: paymentId, error: insertError } = await supabase.rpc('insert_payment', {
           p_client_id: data.client_id,
           p_amount: data.amount,
           p_payment_date: format(data.payment_date, 'yyyy-MM-dd'),
           p_billing_month: data.billing_month,
           p_payment_method: data.payment_method,
-          p_notes: data.notes,
+          p_notes: data.notes || null,
           p_evidence_url: evidenceUrl,
           p_created_by: profile?.id,
         });
-        if (error) throw error;
-        result = { id: newId };
+        if (insertError) throw insertError;
+        result = { id: paymentId, ...data };
       }
 
-      if (generateReceipt && result?.id) {
-        await generateReceiptPDF(result.id, data);
+      if (generateReceipt && result && !editingPayment) {
+        try {
+          await generateReceiptPDF(result.id, data);
+        } catch (err) {
+          console.error('Error al generar recibo automático:', err);
+        }
       }
 
       return result;
@@ -362,7 +416,11 @@ export default function Payments() {
       setEvidenceFile(null);
       setGenerateReceipt(false);
       form.reset();
-      toast.success('Guardado con éxito');
+      toast.success('Operación realizada con éxito');
+    },
+    onError: (error: any) => {
+      console.error('Error en mutation:', error);
+      toast.error('Error al guardar el pago: ' + error.message);
     },
   });
 
@@ -374,7 +432,10 @@ export default function Payments() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['payments'] });
       setPaymentToDelete(null);
-      toast.success('Eliminado');
+      toast.success('Pago eliminado correctamente');
+    },
+    onError: (error: any) => {
+      toast.error('Error al eliminar: ' + error.message);
     },
   });
 
@@ -409,8 +470,26 @@ export default function Payments() {
     setOpenDialog(true);
   };
 
+  const handleGenerateExistingReceipt = async (payment: Payment) => {
+    const paymentData: PaymentFormData = {
+      client_id: payment.client_id,
+      amount: payment.amount,
+      payment_date: new Date(payment.payment_date),
+      billing_month: payment.billing_month,
+      payment_method: payment.payment_method,
+      notes: payment.notes,
+    };
+    await generateReceiptPDF(payment.id, paymentData);
+    queryClient.invalidateQueries({ queryKey: ['payments'] });
+  };
+
   const getMethodBadge = (method: string) => {
-    const map: Record<string, string> = { efectivo: 'Efectivo', transferencia: 'Transferencia', tarjeta: 'Tarjeta', otro: 'Otro' };
+    const map: Record<string, string> = {
+      efectivo: 'Efectivo',
+      transferencia: 'Transferencia',
+      tarjeta: 'Tarjeta',
+      otro: 'Otro',
+    };
     return map[method] || method;
   };
 
@@ -426,144 +505,467 @@ export default function Payments() {
     }
   }, [preselectedClientId, clients]);
 
-  if (isLoading) return <div className="flex h-[50vh] items-center justify-center"><Loader2 className="animate-spin" /></div>;
+  if (isLoading) {
+    return (
+      <div className="flex h-[50vh] items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-light tracking-tight">Pagos</h1>
-          <p className="text-muted-foreground">Gestión de pagos</p>
+          <p className="text-muted-foreground">
+            Registra y consulta los pagos de tus clientes
+          </p>
         </div>
-        {canEdit && <Button onClick={handleAddNew}><Plus className="mr-2 h-4 w-4" /> Registrar</Button>}
+        {canEdit && (
+          <Button onClick={handleAddNew}>
+            <Plus className="mr-2 h-4 w-4" />
+            Registrar Pago
+          </Button>
+        )}
       </div>
 
-      <Card>
+      {/* 
+         ========================================
+         SECCIÓN AGREGADA: GRÁFICO / ESTADÍSTICAS
+         ========================================
+         Si tienes un componente de gráfico aquí, es donde debe ir.
+         El error "width(-1)" ocurre porque el padre no tiene tamaño.
+         El error "removeChild" ocurre al cambiar de cliente sin key.
+      */}
+      <Card className="border-dashed">
         <CardHeader>
-          <div className="flex flex-wrap gap-2 items-center justify-between">
-             <div className="flex flex-1 gap-2">
-                <Input placeholder="Buscar..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="max-w-xs" />
-                <Select value={clientFilter} onValueChange={setClientFilter}>
-                   <SelectTrigger className="w-[180px]"><Filter className="mr-2 h-4 w-4"/><SelectValue placeholder="Cliente"/></SelectTrigger>
-                   <SelectContent><SelectItem value="all">Todos</SelectItem>{clients?.map(c => <SelectItem key={c.id} value={c.id}>{c.full_name}</SelectItem>)}</SelectContent>
-                </Select>
-             </div>
+          <h3 className="text-lg font-medium">Estadísticas de Pagos</h3>
+        </CardHeader>
+        <CardContent>
+          {/* Contenedor con dimensiones explícitas para evitar width(-1) height(-1) */}
+          <div style={{ width: '100%', height: '300px', position: 'relative' }}>
+            {/* 
+               EJEMPLO DE CÓMO DEBE IR TU GRÁFICO:
+               
+               <ResponsiveContainer width="100%" height="100%">
+                 <LineChart data={payments} key={clientFilter}>
+                   <XAxis dataKey="payment_date" />
+                   <YAxis />
+                   <Tooltip />
+                   <Line type="monotone" dataKey="amount" stroke="#8884d8" />
+                 </LineChart>
+               </ResponsiveContainer>
+               
+               NOTA: Observa la propiedad key={clientFilter}. 
+               Esto reinicia el gráfico al filtrar, evitando el error removeChild.
+            */}
+            <div className="flex h-full items-center justify-center text-muted-foreground">
+               {/* Placeholder visual ya que no tengo tu componente Chart */}
+               <p className="text-sm">Aquí se visualizaría el gráfico de historial de pagos.</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-4">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-1 flex-wrap items-center gap-2">
+              <div className="relative min-w-[200px] flex-1">
+                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Buscar por cliente..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="pl-8"
+                />
+              </div>
+              <Select value={clientFilter} onValueChange={setClientFilter}>
+                <SelectTrigger className="w-[180px]">
+                  <Filter className="mr-2 h-4 w-4" />
+                  <SelectValue placeholder="Cliente" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos los clientes</SelectItem>
+                  {clients?.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.full_name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={methodFilter} onValueChange={setMethodFilter}>
+                <SelectTrigger className="w-[150px]">
+                  <SelectValue placeholder="Método" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos</SelectItem>
+                  <SelectItem value="efectivo">Efectivo</SelectItem>
+                  <SelectItem value="transferencia">Transferencia</SelectItem>
+                  <SelectItem value="tarjeta">Tarjeta</SelectItem>
+                  <SelectItem value="otro">Otro</SelectItem>
+                </SelectContent>
+              </Select>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" className="w-[240px] justify-start text-left font-normal">
+                    <CalendarIcon className="mr-2 h-4 w-4" />
+                    {dateRange?.from ? (
+                      dateRange.to ? (
+                        <>
+                          {format(dateRange.from, 'dd/MM/yy')} - {format(dateRange.to, 'dd/MM/yy')}
+                        </>
+                      ) : (
+                        format(dateRange.from, 'dd/MM/yy')
+                      )
+                    ) : (
+                      'Filtrar por fecha'
+                    )}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="start">
+                  <Calendar
+                    mode="range"
+                    selected={dateRange}
+                    onSelect={(range: any) => setDateRange(range)}
+                    initialFocus
+                  />
+                </PopoverContent>
+              </Popover>
+              {(searchTerm || clientFilter !== 'all' || methodFilter !== 'all' || dateRange) && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => {
+                    setSearchTerm('');
+                    setClientFilter('all');
+                    setMethodFilter('all');
+                    setDateRange(undefined);
+                  }}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
+            <Button variant="outline" size="icon" disabled>
+              <Download className="h-4 w-4" />
+            </Button>
           </div>
         </CardHeader>
         <CardContent>
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Cliente</TableHead><TableHead>Monto</TableHead><TableHead>Fecha</TableHead><TableHead>Mes</TableHead><TableHead>Método</TableHead><TableHead>Acciones</TableHead>
+                <TableHead>Cliente</TableHead>
+                <TableHead>Monto</TableHead>
+                <TableHead>Fecha de pago</TableHead>
+                <TableHead>Mes facturado</TableHead>
+                <TableHead>Método</TableHead>
+                <TableHead>Comprobante</TableHead>
+                <TableHead>Recibo</TableHead>
+                <TableHead className="text-right">Acciones</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {payments.map(p => (
-                <TableRow key={p.id}>
-                  <TableCell>{p.client?.full_name}</TableCell>
-                  <TableCell>${p.amount.toFixed(2)}</TableCell>
-                  <TableCell>{format(new Date(p.payment_date), 'dd/MM/yyyy')}</TableCell>
-                  <TableCell>{p.billing_month}</TableCell>
-                  <TableCell><Badge variant="outline">{getMethodBadge(p.payment_method)}</Badge></TableCell>
+              {payments.map((payment) => (
+                <TableRow key={payment.id}>
                   <TableCell>
-                    <div className="flex justify-end gap-2">
-                        {canEdit && <Button variant="ghost" size="icon" onClick={() => handleEdit(p)}><Pencil className="h-4 w-4"/></Button>}
-                        {canDelete && <Button variant="ghost" size="icon" onClick={() => setPaymentToDelete(p)}><Trash2 className="h-4 w-4 text-destructive"/></Button>}
+                    <div>
+                      <p className="font-medium">{payment.client?.full_name || 'Cliente no encontrado'}</p>
+                      <p className="text-xs text-muted-foreground">{payment.client?.id_number || '—'}</p>
+                    </div>
+                  </TableCell>
+                  <TableCell className="font-medium">${payment.amount.toFixed(2)}</TableCell>
+                  <TableCell>{format(new Date(payment.payment_date), 'dd/MM/yyyy')}</TableCell>
+                  <TableCell>{payment.billing_month}</TableCell>
+                  <TableCell>
+                    <Badge variant="outline">{getMethodBadge(payment.payment_method)}</Badge>
+                  </TableCell>
+                  <TableCell>
+                    {payment.evidence_url ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => payment.evidence_url && window.open(getEvidenceUrl(payment.evidence_url), '_blank')}
+                      >
+                        <Eye className="mr-1 h-3 w-3" />
+                        Ver
+                      </Button>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {payment.receipt_url ? (
+                      <Button variant="ghost" size="sm" onClick={() => payment.receipt_url && window.open(payment.receipt_url, '_blank')}>
+                        <Printer className="mr-1 h-3 w-3" />
+                        Ver
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleGenerateExistingReceipt(payment)}
+                        disabled={!canEdit}
+                      >
+                        <Printer className="mr-1 h-3 w-3" />
+                        Generar
+                      </Button>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-1">
+                      {canEdit && (
+                        <Button variant="ghost" size="icon" onClick={() => handleEdit(payment)}>
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                      )}
+                      {canDelete && (
+                        <Button variant="ghost" size="icon" onClick={() => setPaymentToDelete(payment)}>
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      )}
                     </div>
                   </TableCell>
                 </TableRow>
               ))}
+              {payments.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={8} className="text-center text-muted-foreground">
+                    No se encontraron pagos
+                  </TableCell>
+                </TableRow>
+              )}
             </TableBody>
           </Table>
+          {totalCount > pageSize && (
+            <div className="flex items-center justify-end space-x-2 py-4">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={page === 0}
+              >
+                Anterior
+              </Button>
+              <span className="text-sm text-muted-foreground">
+                Página {page + 1} de {Math.ceil(totalCount / pageSize)}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPage((p) => p + 1)}
+                disabled={(page + 1) * pageSize >= totalCount}
+              >
+                Siguiente
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
 
-      {/* Modal */}
+      {/* Modal Formulario */}
       <Dialog open={openDialog} onOpenChange={setOpenDialog}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[600px]" key={editingPayment ? editingPayment.id : 'create'}>
+        <DialogContent 
+          className="max-h-[90vh] overflow-y-auto sm:max-w-[600px]"
+          // FIX: Forzar remount limpio del dialogo para evitar errores de DOM (removeChild)
+          key={editingPayment ? editingPayment.id : 'create-payment'}
+        >
           <DialogHeader>
-            <DialogTitle>{editingPayment ? 'Editar' : 'Registrar Pago'}</DialogTitle>
+            <DialogTitle>{editingPayment ? 'Editar Pago' : 'Registrar Pago'}</DialogTitle>
+            <DialogDescription>
+              Completa los datos del pago
+            </DialogDescription>
           </DialogHeader>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-            
-            {/* FIX CRÍTICO: Usamos Controller para manejar el Select de forma robusta */}
             <div className="space-y-2">
-              <Label>Cliente *</Label>
-              <Controller
-                name="client_id"
-                control={form.control}
-                render={({ field }) => (
-                  <Select onValueChange={field.onChange} value={field.value}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Seleccionar cliente" />
-                    </SelectTrigger>
-                    <SelectContent position="popper">
-                      {clients?.map(c => (
-                        <SelectItem key={c.id} value={c.id}>{c.full_name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-              />
-              {form.formState.errors.client_id && <p className="text-sm text-destructive">{form.formState.errors.client_id.message}</p>}
+              <Label htmlFor="client_id">Cliente *</Label>
+              <Select
+                value={form.watch('client_id')}
+                onValueChange={(value) => form.setValue('client_id', value, { shouldValidate: true })}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Seleccionar cliente" />
+                </SelectTrigger>
+                <SelectContent position="popper">
+                  {clients?.map((client) => (
+                    <SelectItem key={client.id} value={client.id}>
+                      {client.full_name} - {client.id_number}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {form.formState.errors.client_id && (
+                <p className="text-sm text-destructive">{form.formState.errors.client_id.message}</p>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                    <Label>Monto ($)</Label>
-                    <Input type="number" step="0.01" {...form.register('amount', { valueAsNumber: true })} />
-                </div>
-                <div className="space-y-2">
-                    <Label>Fecha</Label>
-                    <Popover>
-                        <PopoverTrigger asChild>
-                            <Button variant="outline" className="w-full justify-start text-left font-normal">
-                                <CalendarIcon className="mr-2 h-4 w-4" />
-                                {form.watch('payment_date') ? format(form.watch('payment_date'), 'PPP', { locale: es }) : 'Seleccionar'}
-                            </Button>
-                        </PopoverTrigger>
-                        <PopoverContent className="w-auto p-0">
-                            <Calendar mode="single" selected={form.watch('payment_date')} onSelect={(d) => d && form.setValue('payment_date', d)} />
-                        </PopoverContent>
-                    </Popover>
-                </div>
+              <div className="space-y-2">
+                <Label htmlFor="amount">Monto ($) *</Label>
+                <Input
+                  id="amount"
+                  type="number"
+                  step="0.01"
+                  {...form.register('amount')}
+                />
+                {form.formState.errors.amount && (
+                  <p className="text-sm text-destructive">{form.formState.errors.amount.message}</p>
+                )}
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="payment_date">Fecha de pago *</Label>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className={cn(
+                        'w-full justify-start text-left font-normal',
+                        !form.watch('payment_date') && 'text-muted-foreground'
+                      )}
+                    >
+                      <CalendarIcon className="mr-2 h-4 w-4" />
+                      {form.watch('payment_date') ? (
+                        format(form.watch('payment_date'), 'PPP', { locale: es })
+                      ) : (
+                        <span>Seleccionar fecha</span>
+                      )}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-0">
+                    <Calendar
+                      mode="single"
+                      selected={form.watch('payment_date')}
+                      onSelect={(date) => date && form.setValue('payment_date', date)}
+                      initialFocus
+                    />
+                  </PopoverContent>
+                </Popover>
+              </div>
             </div>
 
             <div className="space-y-2">
-                <Label>Mes Facturado</Label>
-                <Controller
-                    name="billing_month"
-                    control={form.control}
-                    render={({ field }) => (
-                        <Select onValueChange={field.onChange} value={field.value}>
-                            <SelectTrigger><SelectValue placeholder="Mes" /></SelectTrigger>
-                            <SelectContent>
-                                {monthOptions.map(m => <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>)}
-                            </SelectContent>
-                        </Select>
-                    )}
-                />
+              <Label htmlFor="billing_month">Mes facturado *</Label>
+              <Select
+                value={form.watch('billing_month')}
+                onValueChange={(value) => form.setValue('billing_month', value)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Seleccionar mes" />
+                </SelectTrigger>
+                <SelectContent>
+                  {monthOptions.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
+            <div className="space-y-2">
+              <Label htmlFor="payment_method">Método de pago *</Label>
+              <Select
+                value={form.watch('payment_method')}
+                onValueChange={(value: 'efectivo' | 'transferencia' | 'tarjeta' | 'otro') => form.setValue('payment_method', value)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="efectivo">Efectivo</SelectItem>
+                  <SelectItem value="transferencia">Transferencia</SelectItem>
+                  <SelectItem value="tarjeta">Tarjeta</SelectItem>
+                  <SelectItem value="otro">Otro</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="notes">Notas (opcional)</Label>
+              <Textarea id="notes" {...form.register('notes')} placeholder="Observaciones..." />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Comprobante (opcional)</Label>
+              <div
+                {...getRootProps()}
+                className="cursor-pointer rounded-lg border-2 border-dashed border-muted-foreground/25 p-4 text-center transition-colors hover:border-primary/50"
+              >
+                <input {...getInputProps()} />
+                <Upload className="mx-auto h-6 w-6 text-muted-foreground" />
+                <p className="mt-2 text-sm text-muted-foreground">
+                  {isDragActive
+                    ? 'Suelta el archivo aquí'
+                    : evidenceFile
+                    ? `Archivo: ${evidenceFile.name}`
+                    : editingPayment?.evidence_url
+                    ? 'Comprobante actual. Haz clic o arrastra para cambiar.'
+                    : 'Arrastra una imagen/PDF o haz clic para seleccionar'}
+                </p>
+                {editingPayment?.evidence_url && !evidenceFile && (
+                  <Button
+                    variant="link"
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      editingPayment?.evidence_url && window.open(getEvidenceUrl(editingPayment.evidence_url), '_blank');
+                    }}
+                  >
+                    Ver comprobante actual
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            {!editingPayment && (
+              <div className="flex items-center space-x-2">
+                <Checkbox
+                  id="generate_receipt"
+                  checked={generateReceipt}
+                  onCheckedChange={(checked) => setGenerateReceipt(checked as boolean)}
+                />
+                <Label htmlFor="generate_receipt" className="text-sm cursor-pointer">
+                  Generar recibo simple automáticamente
+                </Label>
+              </div>
+            )}
+
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setOpenDialog(false)}>Cancelar</Button>
+              <Button type="button" variant="outline" onClick={() => setOpenDialog(false)}>
+                Cancelar
+              </Button>
               <Button type="submit" disabled={mutation.isPending || uploading}>
-                {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Guardar
+                {(mutation.isPending || uploading) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                {editingPayment ? 'Guardar cambios' : 'Registrar pago'}
               </Button>
             </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
 
+      {/* Diálogo de eliminación */}
       <AlertDialog open={!!paymentToDelete} onOpenChange={() => setPaymentToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>¿Eliminar pago?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Esta acción no se puede deshacer. Se eliminará el pago de{' '}
+              <span className="font-semibold">{paymentToDelete?.client?.full_name || 'este cliente'}</span>
+              {paymentToDelete?.amount !== undefined ? ` por $${paymentToDelete.amount.toFixed(2)}.` : '.'}
+            </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
-            <AlertDialogAction onClick={() => paymentToDelete && deleteMutation.mutate(paymentToDelete.id)}>Eliminar</AlertDialogAction>
+            <AlertDialogAction
+              onClick={() => paymentToDelete && deleteMutation.mutate(paymentToDelete.id)}
+              className="bg-destructive hover:bg-destructive/90"
+              disabled={deleteMutation.isPending}
+            >
+              {deleteMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Eliminar
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
