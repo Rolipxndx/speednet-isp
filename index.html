@@ -1,15 +1,20 @@
 <!doctype html>
-<html lang="en">
+<html lang="es">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>speednet-isp</title>
-    
-    <!-- Configuración PWA (Unificada dentro del Head) -->
+
+    <!-- ✅ SOLUCIÓN PRINCIPAL: Desactivar Google Translate -->
+    <meta name="google" content="notranslate" />
+    <meta http-equiv="Content-Language" content="es" />
+    <meta name="language" content="Spanish" />
+
+    <!-- Configuración PWA -->
     <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#2563eb" />
-    
+
     <script>
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/sw.js')
@@ -19,7 +24,7 @@
     </script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root" translate="no" class="notranslate"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
