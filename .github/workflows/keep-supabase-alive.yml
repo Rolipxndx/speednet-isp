@@ -1,0 +1,19 @@
+name: Mantener Supabase activo
+
+# Esto programa cuándo se ejecutará
+on:
+  # Se ejecutará automáticamente cada 3 días a las 12:00 UTC
+  schedule:
+    - cron: '0 12 */3 * *'
+  # Permite ejecutarlo manualmente desde la pestaña Actions (por si quieres probarlo)
+  workflow_dispatch:
+
+# Define el trabajo a realizar
+jobs:
+  ping-supabase:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hacer ping a Supabase
+        run: |
+          curl -X GET "https://yyocuxxrybasrvsereuo.supabase.co/rest/v1/" \
+               -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}"
