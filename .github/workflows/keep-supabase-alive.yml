@@ -11,4 +11,5 @@ jobs:
     steps:
       - name: Hacer ping a Supabase
         run: |
-          curl -X GET "https://yyocuxxrybasrvsereuo.supabase.co/auth/v1/health"
+          curl -X GET "https://yyocuxxrybasrvsereuo.supabase.co/auth/v1/health" \
+               -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}"
